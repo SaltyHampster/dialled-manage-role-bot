@@ -116,6 +116,78 @@ app.use(express.json());
 app.get("/", (_, res) => res.send("dialled community bot running"));
 app.get("/health", (_, res) => res.json({ status: "ok" }));
 
+// ── discord oauth: automatic role grant, no manual id needed ─
+const {
+  DISCORD_CLIENT_ID,
+  DISCORD_CLIENT_SECRET,
+  DISCORD_REDIRECT_URI,
+} = process.env;
+
+// step 1: form redirects here (?state=<email or any identifier from the form>)
+app.get("/auth/discord", (req, res) => {
+  const state = encodeURIComponent(req.query.state || "");
+  const authorizeUrl =
+    `https://discord.com/api/oauth2/authorize` +
+    `?client_id=${DISCORD_CLIENT_ID}` +
+    `&redirect_uri=${encodeURIComponent(DISCORD_REDIRECT_URI)}` +
+    `&response_type=code` +
+    `&scope=identify` +
+    `&state=${state}`;
+  res.redirect(authorizeUrl);
+});
+
+// step 2: discord sends them back here with a code
+app.get("/auth/discord/callback", async (req, res) => {
+  const { code, state } = req.query;
+  if (!code) return res.status(400).send("missing code");
+
+  try {
+    // exchange the code for an access token
+    const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: DISCORD_CLIENT_ID,
+        client_secret: DISCORD_CLIENT_SECRET,
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: DISCORD_REDIRECT_URI,
+        scope: "identify",
+      }),
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenData.access_token) {
+      console.error("oauth token exchange failed:", tokenData);
+      return res.status(500).send("could not verify with discord, try again");
+    }
+
+    // use the token to find out who they are
+    const userRes = await fetch("https://discord.com/api/users/@me", {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const user = await userRes.json();
+
+    // grant the role directly, same as the manual webhook did
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const member = await guild.members.fetch(user.id);
+    await member.roles.add(FREE_VERIFIED_ROLE_ID);
+
+    console.log(`verified via oauth: ${user.username} (${user.id}) state=${state || "none"}`);
+
+    res.send(`
+      <html><body style="font-family:sans-serif;text-align:center;padding:60px;">
+        <h2>you're in, ${user.username}</h2>
+        <p>job board access unlocked. head back to discord.</p>
+      </body></html>
+    `);
+  } catch (err) {
+    console.error("oauth callback error:", err.message);
+    res.status(500).send("something went wrong, message ryan directly");
+  }
+});
+
+// manual fallback, kept in case oauth is ever down or you want to grant
+// access by hand for someone the flow failed on
 app.post("/api/verify-lead", async (req, res) => {
   if (LEAD_WEBHOOK_API_KEY && req.headers["x-api-key"] !== LEAD_WEBHOOK_API_KEY) {
     return res.status(401).json({ error: "unauthorised" });
