@@ -166,12 +166,13 @@ client.on("interactionCreate", async (interaction) => {
         .setStyle(ButtonStyle.Success)
     );
     const applyEmbed = new EmbedBuilder()
-      .setTitle("Get access to the Dialled Job Board")
+      .setTitle("🎯 Dialled Job Board")
       .setDescription(
         "We regularly add new closing and setting opportunities for you to apply to.\n\n" +
         "Tap the button below, fill in your details, and you'll get access. Takes about 30 seconds."
       )
       .setColor(0x57f287)
+      .setImage("https://i.imgur.com/D4QrYdc.png")
       .setFooter({ text: "Posted via Dialled Portal" });
 
     await interaction.channel.send({
