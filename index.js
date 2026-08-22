@@ -162,7 +162,7 @@ client.on("interactionCreate", async (interaction) => {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("open_apply_modal")
-        .setLabel("get job board access")
+        .setLabel("Get Job Board Access")
         .setStyle(ButtonStyle.Success)
     );
     const applyEmbed = new EmbedBuilder()
@@ -186,20 +186,23 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton() && interaction.customId === "open_apply_modal") {
     const modal = new ModalBuilder()
       .setCustomId("apply_modal")
-      .setTitle("job board access");
+      .setTitle("Job Board Access");
 
     modal.addComponents(
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("name").setLabel("name").setStyle(TextInputStyle.Short).setRequired(true)
+        new TextInputBuilder().setCustomId("name").setLabel("Name").setStyle(TextInputStyle.Short).setRequired(true)
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("email").setLabel("email").setStyle(TextInputStyle.Short).setRequired(true)
+        new TextInputBuilder().setCustomId("email").setLabel("Email").setStyle(TextInputStyle.Short).setRequired(true)
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("phone").setLabel("phone number").setStyle(TextInputStyle.Short).setRequired(true)
+        new TextInputBuilder().setCustomId("phone").setLabel("Phone Number").setStyle(TextInputStyle.Short).setRequired(true)
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("instagram").setLabel("instagram handle").setStyle(TextInputStyle.Short).setRequired(true)
+        new TextInputBuilder().setCustomId("instagram").setLabel("Instagram Handle").setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("goal").setLabel("What's Your Goal With High Ticket Sales?").setStyle(TextInputStyle.Paragraph).setRequired(true)
       ),
     );
 
@@ -218,6 +221,7 @@ client.on("interactionCreate", async (interaction) => {
       email: interaction.fields.getTextInputValue("email"),
       phone: interaction.fields.getTextInputValue("phone"),
       instagram: interaction.fields.getTextInputValue("instagram"),
+      goal: interaction.fields.getTextInputValue("goal"),
     };
 
     try {
@@ -250,6 +254,7 @@ client.on("interactionCreate", async (interaction) => {
                 { name: "phone", value: answers.phone, inline: true },
                 { name: "instagram", value: answers.instagram, inline: true },
                 { name: "discord", value: `<@${answers.discord_id}>`, inline: true },
+                { name: "goal", value: answers.goal, inline: false },
               )
               .setColor(0x57f287)
               .setTimestamp(),
