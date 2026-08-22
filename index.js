@@ -116,78 +116,157 @@ app.use(express.json());
 app.get("/", (_, res) => res.send("dialled community bot running"));
 app.get("/health", (_, res) => res.json({ status: "ok" }));
 
-// ── discord oauth: automatic role grant, no manual id needed ─
+// ── application button + modal ──────────────────────────
 const {
-  DISCORD_CLIENT_ID,
-  DISCORD_CLIENT_SECRET,
-  DISCORD_REDIRECT_URI,
-} = process.env;
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  EmbedBuilder,
+} = require("discord.js");
 
-// step 1: form redirects here (?state=<email or any identifier from the form>)
-app.get("/auth/discord", (req, res) => {
-  const state = encodeURIComponent(req.query.state || "");
-  const authorizeUrl =
-    `https://discord.com/api/oauth2/authorize` +
-    `?client_id=${DISCORD_CLIENT_ID}` +
-    `&redirect_uri=${encodeURIComponent(DISCORD_REDIRECT_URI)}` +
-    `&response_type=code` +
-    `&scope=identify` +
-    `&state=${state}`;
-  res.redirect(authorizeUrl);
+const APPLY_WEBHOOK_URL = process.env.APPLY_WEBHOOK_URL || null; // optional, e.g. zapier catch hook
+const STAFF_LOG_CHANNEL_ID = process.env.STAFF_LOG_CHANNEL_ID || null; // optional fallback record
+
+// register the /post-apply-button command on startup (guild-scoped, instant)
+async function registerCommands() {
+  const commands = [
+    new SlashCommandBuilder()
+      .setName("post-apply-button")
+      .setDescription("post the job board access button in this channel (staff only)"),
+  ].map((c) => c.toJSON());
+
+  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+  await rest.put(
+    Routes.applicationGuildCommands(client.user.id, GUILD_ID),
+    { body: commands }
+  );
+  console.log("✅ slash command registered");
+}
+
+client.once("ready", async () => {
+  await registerCommands();
 });
 
-// step 2: discord sends them back here with a code
-app.get("/auth/discord/callback", async (req, res) => {
-  const { code, state } = req.query;
-  if (!code) return res.status(400).send("missing code");
+client.on("interactionCreate", async (interaction) => {
+  // staff posts the button
+  if (interaction.isChatInputCommand() && interaction.commandName === "post-apply-button") {
+    if (STAFF_ROLE_ID && !interaction.member.roles.cache.has(STAFF_ROLE_ID)) {
+      return interaction.reply({ content: "staff only.", ephemeral: true });
+    }
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("open_apply_modal")
+        .setLabel("get job board access")
+        .setStyle(ButtonStyle.Success)
+    );
+    const applyEmbed = new EmbedBuilder()
+      .setTitle("Get access to the Dialled Job Board")
+      .setDescription(
+        "We regularly add new closing and setting opportunities for you to apply to.\n\n" +
+        "Tap the button below, fill in your details, and you'll get access. Takes about 30 seconds."
+      )
+      .setColor(0x57f287)
+      .setFooter({ text: "Posted via Dialled Portal" });
 
-  try {
-    // exchange the code for an access token
-    const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: DISCORD_CLIENT_ID,
-        client_secret: DISCORD_CLIENT_SECRET,
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: DISCORD_REDIRECT_URI,
-        scope: "identify",
-      }),
+    await interaction.channel.send({
+      embeds: [applyEmbed],
+      components: [row],
     });
-    const tokenData = await tokenRes.json();
-    if (!tokenData.access_token) {
-      console.error("oauth token exchange failed:", tokenData);
-      return res.status(500).send("could not verify with discord, try again");
+    await interaction.reply({ content: "posted.", ephemeral: true });
+    return;
+  }
+
+  // click opens the modal
+  if (interaction.isButton() && interaction.customId === "open_apply_modal") {
+    const modal = new ModalBuilder()
+      .setCustomId("apply_modal")
+      .setTitle("job board access");
+
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("name").setLabel("name").setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("email").setLabel("email").setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("phone").setLabel("phone number").setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("instagram").setLabel("instagram handle").setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+    );
+
+    await interaction.showModal(modal);
+    return;
+  }
+
+  // modal submit: grant role, forward the data, log it
+  if (interaction.isModalSubmit() && interaction.customId === "apply_modal") {
+    await interaction.deferReply({ ephemeral: true });
+
+    const answers = {
+      discord_id: interaction.user.id,
+      discord_username: interaction.user.username,
+      name: interaction.fields.getTextInputValue("name"),
+      email: interaction.fields.getTextInputValue("email"),
+      phone: interaction.fields.getTextInputValue("phone"),
+      instagram: interaction.fields.getTextInputValue("instagram"),
+    };
+
+    try {
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      await member.roles.add(FREE_VERIFIED_ROLE_ID);
+    } catch (err) {
+      console.error("role grant failed:", err.message);
+      await interaction.editReply("something went wrong granting access, message ryan directly.");
+      return;
     }
 
-    // use the token to find out who they are
-    const userRes = await fetch("https://discord.com/api/users/@me", {
-      headers: { Authorization: `Bearer ${tokenData.access_token}` },
-    });
-    const user = await userRes.json();
+    if (APPLY_WEBHOOK_URL) {
+      fetch(APPLY_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(answers),
+      }).catch((err) => console.error("webhook forward failed:", err.message));
+    }
 
-    // grant the role directly, same as the manual webhook did
-    const guild = await client.guilds.fetch(GUILD_ID);
-    const member = await guild.members.fetch(user.id);
-    await member.roles.add(FREE_VERIFIED_ROLE_ID);
+    if (STAFF_LOG_CHANNEL_ID) {
+      try {
+        const logChannel = await client.channels.fetch(STAFF_LOG_CHANNEL_ID);
+        await logChannel.send({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("new job board application")
+              .addFields(
+                { name: "name", value: answers.name, inline: true },
+                { name: "email", value: answers.email, inline: true },
+                { name: "phone", value: answers.phone, inline: true },
+                { name: "instagram", value: answers.instagram, inline: true },
+                { name: "discord", value: `<@${answers.discord_id}>`, inline: true },
+              )
+              .setColor(0x57f287)
+              .setTimestamp(),
+          ],
+        });
+      } catch (err) {
+        console.error("staff log post failed:", err.message);
+      }
+    }
 
-    console.log(`verified via oauth: ${user.username} (${user.id}) state=${state || "none"}`);
-
-    res.send(`
-      <html><body style="font-family:sans-serif;text-align:center;padding:60px;">
-        <h2>you're in, ${user.username}</h2>
-        <p>job board access unlocked. head back to discord.</p>
-      </body></html>
-    `);
-  } catch (err) {
-    console.error("oauth callback error:", err.message);
-    res.status(500).send("something went wrong, message ryan directly");
+    console.log(`new applicant: ${answers.name} (${answers.email}) discord_id=${answers.discord_id}`);
+    await interaction.editReply("you're in, job board access unlocked.");
+    return;
   }
 });
 
-// manual fallback, kept in case oauth is ever down or you want to grant
-// access by hand for someone the flow failed on
+// manual fallback, kept in case the button flow ever fails for someone
 app.post("/api/verify-lead", async (req, res) => {
   if (LEAD_WEBHOOK_API_KEY && req.headers["x-api-key"] !== LEAD_WEBHOOK_API_KEY) {
     return res.status(401).json({ error: "unauthorised" });
