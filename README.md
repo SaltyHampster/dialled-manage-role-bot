@@ -16,3 +16,23 @@ discord bot token as the existing job board bot.
 ## env vars
 
 see .env.example
+
+## discord oauth setup (do this after first deploy)
+
+1. deploy once with the oauth vars blank, so railway gives you a public url
+2. copy that url, set `DISCORD_REDIRECT_URI` to `<that url>/auth/discord/callback`
+3. in the dev portal, oauth2 tab: add that exact same url under redirects, save
+4. copy client id and client secret from the same tab into `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`
+5. redeploy
+
+## how the form connects
+
+end your lead form with a link/button to:
+`https://<your-railway-url>/auth/discord?state=<their email or any id from the form>`
+
+they get sent to discord, approve, land back on your bot, and get the
+free-verified role automatically. `state` is just carried through and logged,
+useful for matching the discord grant back to the form submission in your logs,
+not required for the role grant itself to work.
+
+`/api/verify-lead` is kept as a manual fallback if oauth ever fails for someone.
