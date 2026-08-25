@@ -132,6 +132,8 @@ const {
 
 const APPLY_WEBHOOK_URL = process.env.APPLY_WEBHOOK_URL || null; // optional, e.g. zapier catch hook
 const STAFF_LOG_CHANNEL_ID = process.env.STAFF_LOG_CHANNEL_ID || null; // optional fallback record
+const SOURCE_CHANNEL_ID = process.env.SOURCE_CHANNEL_ID || "1541814286194581685"; // "learn about HTS" channel, mentioned in the welcome message
+const WINS_CHANNEL_ID = process.env.WINS_CHANNEL_ID || "1470437209248104482"; // wins channel, mentioned in the welcome message
 
 // register the /post-apply-button command on startup (guild-scoped, instant)
 async function registerCommands() {
@@ -166,10 +168,17 @@ client.on("interactionCreate", async (interaction) => {
         .setStyle(ButtonStyle.Success)
     );
     const applyEmbed = new EmbedBuilder()
-      .setTitle("🎯 Dialled Job Board")
+      .setTitle("👋 Welcome to Dialled")
       .setDescription(
-        "We regularly add new closing and setting opportunities for you to apply to.\n\n" +
-        "Tap the button below, fill in your details, and you'll get access. Takes about 30 seconds."
+        "Glad you're here.\n\n" +
+        "Dialled helps complete beginners land their first role in high ticket sales, " +
+        "as a setter or a closer, and get to their first $10k month.\n\n" +
+        `New to all this? Head over to ${SOURCE_CHANNEL_ID ? `<#${SOURCE_CHANNEL_ID}>` : "#free-source"} ` +
+        "to learn what high ticket sales actually is and how the whole thing works.\n\n" +
+        `You've also got access to ${WINS_CHANNEL_ID ? `<#${WINS_CHANNEL_ID}>` : "#wins"}, ` +
+        "where our students post their results as they hit them. Real people, real numbers.\n\n" +
+        "**🎯 And when you're ready:** tap below to unlock the Dialled Job Board. " +
+        "We regularly add new closing and setting opportunities you can apply to directly, takes about 30 seconds to get in."
       )
       .setColor(0x57f287)
       .setImage("https://i.imgur.com/D4QrYdc.png")
