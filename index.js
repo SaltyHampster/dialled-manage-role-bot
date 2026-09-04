@@ -46,15 +46,103 @@ const APPLY_WEBHOOK_URL = process.env.APPLY_WEBHOOK_URL || null; // optional, e.
 const STAFF_LOG_CHANNEL_ID = process.env.STAFF_LOG_CHANNEL_ID || null; // optional fallback record
 const SOURCE_CHANNEL_ID = process.env.SOURCE_CHANNEL_ID || "1541814286194581685"; // "learn about HTS" channel
 const WINS_CHANNEL_ID = process.env.WINS_CHANNEL_ID || "1470437209248104482"; // wins channel
-
-// build the invite -> role map, skipping any codes that aren't configured,
-// otherwise an unset env var becomes a literal "undefined" key
-const INVITE_ROLE_MAP = {};
-if (FREE_INVITE_CODE && FREE_ROLE_ID) INVITE_ROLE_MAP[FREE_INVITE_CODE] = FREE_ROLE_ID;
-if (PAID_INVITE_CODE && PAID_ROLE_ID) INVITE_ROLE_MAP[PAID_INVITE_CODE] = PAID_ROLE_ID;
+const ONBOARDING_LOG_CHANNEL_ID =
+  process.env.ONBOARDING_LOG_CHANNEL_ID || "1470437209437110455"; // 📃┃onboarding-logs
 
 // student channel naming: 🤵🏻┃their-discord-name
 const STUDENT_CHANNEL_PREFIX = "🤵🏻┃";
+
+// ── invite source config ────────────────────────────────
+// each invite code maps to a source, so joins can be attributed to the place
+// the link was posted. to add a source: create the invite in discord, put the
+// code in an env var, add one registerInviteSource() line below.
+const INVITE_SOURCES = {}; // code -> { label, emoji, roleId, color, paid }
+
+function registerInviteSource(code, config) {
+  if (!code) return;
+  if (INVITE_SOURCES[code]) {
+    console.warn(
+      `invite code ${code} is configured for both "${INVITE_SOURCES[code].label}" and "${config.label}", keeping the first`
+    );
+    return;
+  }
+  INVITE_SOURCES[code] = config;
+}
+
+// paid
+registerInviteSource(PAID_INVITE_CODE, {
+  label: "Paid Program",
+  emoji: "💰",
+  roleId: PAID_ROLE_ID,
+  color: 0xf1c40f,
+  paid: true,
+});
+
+// free, split by where the link lives
+registerInviteSource(process.env.FREE_INVITE_CODE_YOUTUBE, {
+  label: "YouTube",
+  emoji: "▶️",
+  roleId: FREE_ROLE_ID,
+  color: 0xff0000,
+});
+registerInviteSource(process.env.FREE_INVITE_CODE_BOOKING, {
+  label: "Post-Call Booking Page",
+  emoji: "📅",
+  roleId: FREE_ROLE_ID,
+  color: 0x57f287,
+});
+registerInviteSource(process.env.FREE_INVITE_CODE_INSTAGRAM, {
+  label: "Instagram Bio / DMs",
+  emoji: "📸",
+  roleId: FREE_ROLE_ID,
+  color: 0xe1306c,
+});
+registerInviteSource(process.env.FREE_INVITE_CODE_TIKTOK, {
+  label: "TikTok",
+  emoji: "🎵",
+  roleId: FREE_ROLE_ID,
+  color: 0x2c2f33,
+});
+registerInviteSource(process.env.FREE_INVITE_CODE_EMAIL, {
+  label: "Email / Nurture Sequence",
+  emoji: "✉️",
+  roleId: FREE_ROLE_ID,
+  color: 0x3498db,
+});
+registerInviteSource(process.env.FREE_INVITE_CODE_REFERRAL, {
+  label: "Student Referral",
+  emoji: "🤝",
+  roleId: FREE_ROLE_ID,
+  color: 0x9b59b6,
+});
+registerInviteSource(process.env.FREE_INVITE_CODE_ADS, {
+  label: "Paid Ads",
+  emoji: "🎯",
+  roleId: FREE_ROLE_ID,
+  color: 0xe67e22,
+});
+registerInviteSource(process.env.FREE_INVITE_CODE_OUTREACH, {
+  label: "Cold Outreach / DMs",
+  emoji: "📤",
+  roleId: FREE_ROLE_ID,
+  color: 0x1abc9c,
+});
+
+// generic free link, registered last so a more specific source wins if the
+// same code ends up in two env vars by mistake
+registerInviteSource(FREE_INVITE_CODE, {
+  label: "Free (general link)",
+  emoji: "🔗",
+  roleId: FREE_ROLE_ID,
+  color: 0x5865f2,
+});
+
+const UNKNOWN_SOURCE = {
+  label: "Unknown / untracked invite",
+  emoji: "❓",
+  roleId: null,
+  color: 0x95a5a6,
+};
 
 // ── invite use-count cache ──────────────────────────────
 const inviteCache = new Map(); // guildId -> Map(code -> uses)
@@ -65,8 +153,10 @@ async function cacheGuildInvites(guild) {
     const map = new Map();
     invites.forEach((inv) => map.set(inv.code, inv.uses));
     inviteCache.set(guild.id, map);
+    return map;
   } catch (err) {
     console.error(`could not cache invites for ${guild.id}:`, err.message);
+    return null;
   }
 }
 
@@ -81,18 +171,24 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName("post-apply-button")
       .setDescription("post the job board access button in this channel (staff only)"),
+    new SlashCommandBuilder()
+      .setName("invite-stats")
+      .setDescription("show total joins per tracked invite link (staff only)"),
   ].map((c) => c.toJSON());
 
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
   await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), {
     body: commands,
   });
-  console.log("✅ slash command registered");
+  console.log("✅ slash commands registered");
 }
 
-// single ready handler, so startup order is predictable and failures are visible
 client.once(Events.ClientReady, async () => {
   console.log(`✅ community bot ready: ${client.user.tag}`);
+
+  const tracked = Object.entries(INVITE_SOURCES);
+  console.log(`tracking ${tracked.length} invite source(s):`);
+  tracked.forEach(([code, s]) => console.log(`  ${code} -> ${s.label}`));
 
   for (const guild of client.guilds.cache.values()) {
     await cacheGuildInvites(guild);
@@ -110,8 +206,6 @@ client.on(Events.InviteDelete, (invite) => cacheGuildInvites(invite.guild));
 
 // ── student channel naming + creation ───────────────────
 function buildStudentChannelName(member) {
-  // displayName = server nickname, falling back to their discord display name,
-  // falling back to the raw username
   const raw = member.displayName || member.user.globalName || member.user.username;
 
   const slug = raw
@@ -121,9 +215,8 @@ function buildStudentChannelName(member) {
     .replace(/-{2,}/g, "-")
     .replace(/^-+|-+$/g, "");
 
-  // if the name is entirely non-latin the slug comes back empty, so fall back
-  // to something that still identifies them rather than creating "🤵🏻┃"
-  const safe = slug || member.user.username.replace(/[^a-z0-9\-_]/gi, "").toLowerCase() || member.user.id;
+  const safe =
+    slug || member.user.username.replace(/[^a-z0-9\-_]/gi, "").toLowerCase() || member.user.id;
 
   return `${STUDENT_CHANNEL_PREFIX}${safe}`.slice(0, 100);
 }
@@ -134,10 +227,8 @@ async function createStudentChannel(member) {
   const guild = member.guild;
   const name = buildStudentChannelName(member);
 
-  // make sure the cache is warm before we check for duplicates
   await guild.channels.fetch();
 
-  // don't create a second channel if they rejoin, or if one was made by hand
   const existing = guild.channels.cache.find(
     (ch) =>
       ch &&
@@ -146,7 +237,7 @@ async function createStudentChannel(member) {
   );
 
   if (existing) {
-    console.log(`student channel already exists for ${member.user.tag}: #${existing.name}`);
+    console.log(`student channel already exists for ${member.user.username}: #${existing.name}`);
     return existing;
   }
 
@@ -180,17 +271,64 @@ async function createStudentChannel(member) {
     permissionOverwrites: overwrites,
   });
 
-  console.log(`created student channel #${channel.name} for ${member.user.tag}`);
+  console.log(`created student channel #${channel.name} for ${member.user.username}`);
   return channel;
 }
 
-// ── on join: diff invite usage, assign role, create channel if paid ─
+// ── onboarding log ──────────────────────────────────────
+function buildJoinLogEmbed({ member, source, code, uses, studentChannel, roleAssigned }) {
+  const createdAt = Math.floor(member.user.createdTimestamp / 1000);
+
+  const embed = new EmbedBuilder()
+    .setTitle(`${source.emoji} ${source.paid ? "New paid student" : "New member"} joined`)
+    .setColor(source.color)
+    .setThumbnail(member.user.displayAvatarURL())
+    .addFields(
+      { name: "Member", value: `<@${member.id}>\n\`${member.user.username}\``, inline: true },
+      { name: "Came from", value: source.label, inline: true },
+      {
+        name: "Total from this link",
+        value: uses === null || uses === undefined ? "unknown" : `${uses}`,
+        inline: true,
+      },
+      { name: "Invite code", value: code ? `\`${code}\`` : "unknown", inline: true },
+      { name: "Account age", value: `<t:${createdAt}:R>`, inline: true },
+      { name: "Server member #", value: `${member.guild.memberCount}`, inline: true }
+    )
+    .setFooter({ text: `user id: ${member.id}` })
+    .setTimestamp();
+
+  if (roleAssigned === false) {
+    embed.addFields({
+      name: "⚠️ Role",
+      value: "role assignment failed, check the bot's role position",
+      inline: false,
+    });
+  }
+
+  if (studentChannel) {
+    embed.addFields({ name: "Student channel", value: `<#${studentChannel.id}>`, inline: false });
+  }
+
+  return embed;
+}
+
+async function postOnboardingLog(embed) {
+  if (!ONBOARDING_LOG_CHANNEL_ID) return;
+  try {
+    const channel = await client.channels.fetch(ONBOARDING_LOG_CHANNEL_ID);
+    await channel.send({ embeds: [embed] });
+  } catch (err) {
+    console.error("onboarding log post failed:", err.message);
+  }
+}
+
+// ── on join: attribute the invite, assign role, log it ──
 client.on(Events.GuildMemberAdd, async (member) => {
   try {
     const guild = member.guild;
     const before = inviteCache.get(guild.id) || new Map();
-    await cacheGuildInvites(guild);
-    const after = inviteCache.get(guild.id) || new Map();
+    const after = (await cacheGuildInvites(guild)) || new Map();
 
     let usedCode = null;
     for (const [code, uses] of after.entries()) {
@@ -200,29 +338,40 @@ client.on(Events.GuildMemberAdd, async (member) => {
       }
     }
 
-    if (!usedCode) {
-      console.log(`could not determine invite used by ${member.user.tag}`);
-      return;
-    }
+    const source = (usedCode && INVITE_SOURCES[usedCode]) || UNKNOWN_SOURCE;
+    const uses = usedCode ? after.get(usedCode) : null;
 
-    const roleId = INVITE_ROLE_MAP[usedCode];
-    if (!roleId) return;
+    let roleAssigned = null;
+    let studentChannel = null;
 
-    try {
-      await member.roles.add(roleId);
-      console.log(`assigned role ${roleId} to ${member.user.tag} via invite ${usedCode}`);
-    } catch (err) {
-      console.error(`failed to assign role to ${member.user.tag}:`, err.message);
-      return; // no role means no paid channel either
-    }
-
-    if (roleId === PAID_ROLE_ID) {
+    if (source.roleId) {
       try {
-        await createStudentChannel(member);
+        await member.roles.add(source.roleId);
+        roleAssigned = true;
+        console.log(
+          `${member.user.username} joined via ${source.label} (${usedCode}), role ${source.roleId} assigned`
+        );
       } catch (err) {
-        console.error(`failed to create student channel for ${member.user.tag}:`, err.message);
+        roleAssigned = false;
+        console.error(`failed to assign role to ${member.user.username}:`, err.message);
+      }
+    } else {
+      console.log(
+        `${member.user.username} joined via ${usedCode || "an undetermined invite"}, no role configured`
+      );
+    }
+
+    if (source.paid && roleAssigned) {
+      try {
+        studentChannel = await createStudentChannel(member);
+      } catch (err) {
+        console.error(`failed to create student channel for ${member.user.username}:`, err.message);
       }
     }
+
+    await postOnboardingLog(
+      buildJoinLogEmbed({ member, source, code: usedCode, uses, studentChannel, roleAssigned })
+    );
   } catch (err) {
     console.error("guildMemberAdd handler error:", err);
   }
@@ -312,6 +461,53 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+    // ── staff checks where people are coming from ──
+    if (interaction.isChatInputCommand() && interaction.commandName === "invite-stats") {
+      if (STAFF_ROLE_ID && !interaction.member.roles.cache.has(STAFF_ROLE_ID)) {
+        return interaction.reply({ content: "staff only.", flags: MessageFlags.Ephemeral });
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const uses = await cacheGuildInvites(interaction.guild);
+      if (!uses) {
+        await interaction.editReply("couldn't fetch invites, the bot needs Manage Server.");
+        return;
+      }
+
+      const rows = Object.entries(INVITE_SOURCES).map(([code, s]) => ({
+        label: `${s.emoji} ${s.label}`,
+        code,
+        uses: uses.get(code),
+      }));
+
+      if (!rows.length) {
+        await interaction.editReply("no invite sources configured yet.");
+        return;
+      }
+
+      rows.sort((a, b) => (b.uses ?? -1) - (a.uses ?? -1));
+      const total = rows.reduce((sum, r) => sum + (r.uses || 0), 0);
+
+      const embed = new EmbedBuilder()
+        .setTitle("📊 Invite source breakdown")
+        .setColor(0x5865f2)
+        .setDescription(
+          rows
+            .map((r) =>
+              r.uses === undefined
+                ? `${r.label} — \`${r.code}\` · **invite not found in this server**`
+                : `${r.label} — \`${r.code}\` · **${r.uses}** join${r.uses === 1 ? "" : "s"}`
+            )
+            .join("\n")
+        )
+        .setFooter({ text: `${total} total joins across tracked links` })
+        .setTimestamp();
+
+      await interaction.editReply({ embeds: [embed] });
+      return;
+    }
+
     // ── click opens the modal (blocked if they already have access) ──
     if (interaction.isButton() && interaction.customId === "open_apply_modal") {
       const member =
@@ -342,8 +538,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
-      // second guard: covers someone opening the modal twice before submitting,
-      // or getting the role granted manually while the modal was open
       if (FREE_VERIFIED_ROLE_ID && member.roles.cache.has(FREE_VERIFIED_ROLE_ID)) {
         await interaction.editReply("you've already got job board access, nothing else to do.");
         return;
@@ -367,7 +561,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
-      // only forward and log once the role actually landed
       if (APPLY_WEBHOOK_URL) {
         fetch(APPLY_WEBHOOK_URL, {
           method: "POST",
@@ -409,7 +602,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
   } catch (err) {
     console.error("interaction handler error:", err);
 
-    // try to say something rather than leaving discord showing "thinking..."
     try {
       if (interaction.isRepliable()) {
         const msg = "something went wrong, message ryan directly.";
@@ -435,8 +627,6 @@ app.get("/health", (_, res) => res.json({ status: "ok" }));
 
 // manual fallback, kept in case the button flow ever fails for someone
 app.post("/api/verify-lead", async (req, res) => {
-  // fail closed: without a key set this endpoint would hand out roles to anyone
-  // who can guess a discord id
   if (!LEAD_WEBHOOK_API_KEY) {
     console.error("verify-lead called but LEAD_WEBHOOK_API_KEY is unset, refusing");
     return res.status(503).json({ error: "endpoint disabled" });
